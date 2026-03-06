@@ -36,7 +36,7 @@ func NewProcess() (*Process, error) {
 		return nil, err
 	}
 
-	h, err := windows.OpenProcess(0x0010, false, module.ProcessID)
+	h, err := ntOpenProcess(module.ProcessID, 0x0010)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,7 @@ func NewProcessForPID(pid uint32) (*Process, error) {
 		return nil, errors.New("no module found for the specified PID")
 	}
 
-	h, err := windows.OpenProcess(0x0010, false, module.ProcessID)
+	h, err := ntOpenProcess(module.ProcessID, 0x0010)
 	if err != nil {
 		return nil, err
 	}
@@ -125,28 +125,16 @@ func ReadMemoryChunked(handle windows.Handle, baseAddress uintptr, size uint32) 
 	var data = make([]byte, size)
 	const pageSize = uintptr(4096)
 
-	successfulReads := 0
-	failedReads := 0
-
 	for offset := uintptr(0); offset < uintptr(size); offset += pageSize {
 		address := baseAddress + offset
 		chunkSize := pageSize
-
-		// Adjust last chunk
 		if offset+pageSize > uintptr(size) {
 			chunkSize = uintptr(size) - offset
 		}
-
-		// Try to read, but don't fail if it's protected
-		err := windows.ReadProcessMemory(handle, address, &data[offset], chunkSize, nil)
-		if err != nil {
-			failedReads++
-			// Fill with zeros and continue (pattern matching will fail gracefully)
+		if err := ntReadMemory(handle, address, &data[offset], chunkSize); err != nil {
 			for i := offset; i < offset+chunkSize; i++ {
 				data[i] = 0
 			}
-		} else {
-			successfulReads++
 		}
 	}
 
@@ -155,7 +143,7 @@ func ReadMemoryChunked(handle windows.Handle, baseAddress uintptr, size uint32) 
 
 func (p *Process) ReadBytesFromMemory(address uintptr, size uint) []byte {
 	var data = make([]byte, size)
-	windows.ReadProcessMemory(p.handler, address, &data[0], uintptr(size), nil)
+	_ = ntReadMemory(p.handler, address, &data[0], uintptr(size))
 
 	return data
 }
@@ -275,7 +263,7 @@ type ModuleInfo struct {
 }
 
 func GetProcessModules(processID uint32) ([]ModuleInfo, error) {
-	hProcess, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, processID)
+	hProcess, err := ntOpenProcess(processID, windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ)
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +311,7 @@ func (p *Process) ReadPointer(address uintptr, size int) (uintptr, error) {
 }
 
 func (p *Process) ReadIntoBuffer(address uintptr, buffer []byte) error {
-	return windows.ReadProcessMemory(p.handler, address, &buffer[0], uintptr(len(buffer)), nil)
+	return ntReadMemory(p.handler, address, &buffer[0], uintptr(len(buffer)))
 }
 
 // ReadWidgetContainer reads the WidgetContainer structure.

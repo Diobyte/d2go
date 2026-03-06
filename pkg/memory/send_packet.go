@@ -127,7 +127,6 @@ func findPatternOffset(memory []byte, pattern, mask string) int {
 
 func (s *sendPacketState) ensureHandle(pid uint32) (windows.Handle, error) {
 	if s.handle != 0 && s.processPID == pid {
-		// Reset exit flag even if handle is reused - we're in a new game
 		s.isExiting = false
 		return s.handle, nil
 	}
@@ -153,14 +152,12 @@ func (s *sendPacketState) ensureHandle(pid uint32) (windows.Handle, error) {
 		s.fn = 0
 	}
 
-	h, err := windows.OpenProcess(sendPacketProcessAccess, false, pid)
+	h, err := ntOpenProcess(pid, sendPacketProcessAccess)
 	if err != nil {
 		return 0, fmt.Errorf("open process %d: %w", pid, err)
 	}
 	s.handle = h
 	s.processPID = pid
-
-	// Reset exiting flag when starting new game
 	s.isExiting = false
 
 	return h, nil
@@ -173,7 +170,7 @@ func (s *sendPacketState) ensureStub(handle windows.Handle) error {
 
 	stubSize := uintptr(len(sendPacketStubBase))
 
-	addr, err := virtualAllocEx(handle, stubSize, windows.PAGE_EXECUTE_READWRITE)
+	addr, err := virtualAllocEx(handle, stubSize, windows.PAGE_READWRITE)
 	if err != nil {
 		return fmt.Errorf("allocate remote stub: %w", err)
 	}
@@ -865,8 +862,7 @@ func (p *Process) waitForPacketCompletion(handle windows.Handle, state *sendPack
 	for {
 		select {
 		case <-timeout:
-			// Try to read status one last time before failing
-			if err := windows.ReadProcessMemory(handle, state.meta+sendPacketStatusOffset, &statusBuf[0], 4, nil); err == nil {
+			if err := ntReadMemory(handle, state.meta+sendPacketStatusOffset, &statusBuf[0], 4); err == nil {
 				status := binary.LittleEndian.Uint32(statusBuf[:])
 				if status == 1 {
 					return nil
@@ -874,12 +870,12 @@ func (p *Process) waitForPacketCompletion(handle windows.Handle, state *sendPack
 			}
 			return fmt.Errorf("packet send timeout: APC not processed within %dms", timeoutMs)
 		case <-ticker.C:
-			if err := windows.ReadProcessMemory(handle, state.meta+sendPacketStatusOffset, &statusBuf[0], 4, nil); err != nil {
+			if err := ntReadMemory(handle, state.meta+sendPacketStatusOffset, &statusBuf[0], 4); err != nil {
 				continue
 			}
 			status := binary.LittleEndian.Uint32(statusBuf[:])
 			if status == 1 {
-				return nil // Success - packet was sent
+				return nil
 			}
 		}
 	}
@@ -892,7 +888,7 @@ func writeRemoteMemory(handle windows.Handle, address uintptr, data []byte) erro
 	if len(data) == 0 {
 		return nil
 	}
-	return windows.WriteProcessMemory(handle, address, &data[0], uintptr(len(data)), nil)
+	return ntWriteMemory(handle, address, &data[0], uintptr(len(data)))
 }
 
 func virtualAllocEx(handle windows.Handle, size uintptr, protect uint32) (uintptr, error) {
